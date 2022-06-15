@@ -1,0 +1,240 @@
+-VM PART
+
+    Open VirtualBox -> name your vm -> give memory size -> Create a virtual hard disk now
+    -> VDI -> Fixed size -> Location /goinfre | size 8gb
+
+    VM SETTINGS
+        -> Storage -> Optical Drive: .iso file
+        -> Network -> Attached to: Bridged Adapter -> Name: en0: Ethernet
+    
+    Start VM -> Graphical install -> language settings -> name your host
+    -> name your domain -> root password -> username
+    
+    PARTITION -> Guided - use entire disk -> All files in one partition -> Choose #1 primary 7.6 GB f ext4 /
+    -> Delete the partition -> Choose pri/log 7.6 GB FREE SPACE -> Create a new partition
+    -> 4.5 GB (4.2GB is asked but you need 300mb extra for Grub install later) -> Primary -> Beginning
+    -> Done setting up the partition -> Choose pri/log 3.1 GB FREE SPACE -> Create a new partition -> 3.1 GB / max
+    -> Logical -> Done setting up the partition -> Finish partitioning and write changes to disk -> Write changes to disks YES
+    
+    Scan extra installation media NO -> Continue... -> Leave HTTP proxy blank -> Participate ... NO
+    -> Choose only SSH server & standard system utilities -> Install the GRUB.. YES -> Don't enter manually
+    take the ready option
+    ------------------------------------------------------------------------------------------------------------------------------------
+
+-NETWORK AND SECURITY PART
+
+    You must create a non-root user to connect to the machine and work.
+    Use sudo, with this user, to be able to perform operation requiring special rights. 
+    
+        First login your VM
+        command 'lsblk' to see that your partitions are ok.
+        Use command 'su -' and give root password to become root 'whoami' to check if you are root
+        Download sudo 'apt install sudo'
+        Give sudo rights to your user 'usermod -aG sudo [YOURUSERNAME]'
+            (a = add, G = group) (without a removes you from all other groups except sudo. Don't do that)
+            (can also be done with command 'visudo' -> #User privilage specification and add YOURUSERNAME there
+            and ALL=(ALL:ALL ALL))
+        We need to login again -> 'exit' 'exit'
+        To check sudo 'sudo -v' or 'groups' or 'getent group sudo'
+
+    ------------------------------------------------------------------------------------------------------------------------------------
+    We don’t want you to use the DHCP service of your machine. You’ve got to configure it to have a static IP and a Netmask in \30.
+        'ip a' or 'hostname -I' to see your IP (my ip: 10.13.200.17)
+        'ip r' to see your default gateway (my: 10.13.254.254)
+        if you want to use commands 'ifconfig, route, etc' install net-tools 'sudo apt-get install net-tools'
+        'sudo cat /etc/network/interfaces' to see if DHCP in on (it is).
+        'sudo nano /etc/network/interface' to change your IP static
+            iface enp0s3 inet dhcp <- Change this to ->
+        ->  iface enp0s3 inet static
+                address 10.13.200.17/30
+                gateway 10.13.254.254
+        reboot your VM ('sudo reboot')
+        Check that your IP has changed ('ip a')
+    
+    ------------------------------------------------------------------------------------------------------------------------------------
+    You have to change the default port of the SSH service by the one of your choice. SSH access HAS TO be done with publickeys. 
+    SSH root access SHOULD NOT be allowed directly, but with a user who can be root.
+        First 'sudo ssh service status' to check if you even have ssh service
+        'sudo nano /etc/ssh/sshd_config' to change the default port and some other stuff
+        -> #Port 22 -> Port [YOURPORT] (first check 'grep -w [PORTNUMBER] /etc/services) that the port is free
+        -> #PubkeyAuthentication Yes -> PubkeyAuthentication No
+        -> #PermitRootLogin prohibit-password -> PermitRootLogin No
+        -> PasswordAuthentication Yes
+        Then we have to do ssh keys in VM -> 'ssh-keygen'
+        -> REALMACHINE terminal: 'chmod 700 ~.ssh/' 
+        Try to connect to your VM from your REALMACHINE terminal 'ssh VMUSERNAME@IP -p [YOURPORT]
+        (ssh reijjo@10.13.200.17 -p 55555) if it works disconnect
+        Next we copy REALMACHINE public key to VM
+        -> REALMACHINE 'ssh-copy-id VMUSERNAME@IP -p YOURPORT (ssh-copy-id reijjo@10.13.200.17 -p 55555)
+        Now your pubkey should be in VM ./ssh/authorized_keys file. Next back to  /etc/ssh/shhd_config
+        'sudo nano /etc/ssh/sshd_config' -> PubkeyAuthentication Yes & PasswordAuthentication No
+        -> reboot ssh 'sudo service ssh restart' -> Connect to your VM
+
+    ------------------------------------------------------------------------------------------------------------------------------------
+    You have to set the rules of your firewall on your server only with the services used outside the VM.
+       
+        Install iptables ('sudo apt-get install iptables')
+        Install ufw ('sudo apt install ufw') -> 'sudo ufw enable'
+        Deny incoming traffic and allow outgoing
+        -> sudo ufw default deny incoming
+        -> sudo ufw default allow outgoing
+        Allow http & https & YOURPORT -> 'sudo ufw allow http' -> 'sudo ufw allow https' -> 'sudo ufw allow YOURPORT'
+        Restart ufw and check status
+        -> 'sudo ufw reload'
+        -> 'sudo ufw status verbose'
+    
+    ------------------------------------------------------------------------------------------------------------------------------------
+    You have to set a DOS (Denial Of Service Attack) protection on your open ports of your VM.
+       
+        Install fail2ban ('sudo apt-get install fail2ban')
+        Copy your jail.conf file to jail.local ('sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local')
+        Make changes to your jail.local file ('sudo nano /etc/fail2ban/jail.local)
+        -> add [sshd] enabled = true
+        -> add after # HTTP servers
+        [http-get-dos]
+
+        enabled = true
+        port    = http,https
+        filter  = http-get-dos
+        logpath = /var/log/auth.log
+        action  = iptables[name=HTTP,port=http,protocol=tcp]
+        
+        Then we make that filter 'sudo nano /etc/fail2ban/filter.d/http-get-dos.conf
+        'sudo nano /etc/fail2ban/filter.d/http-get-dos.conf' ->
+        [Definition]
+
+        failregex = ^<HOST> -.*"(GET|POST).*
+        ignoreregex = 
+
+        Restart fail2ban and ufw ('sudo ufw reload && sudo service fail2ban restart')
+        You can DoS attack to your VM with Slowloris ('sudo apt-get install git')
+        ('git clone https://github.com/gkbrk/slowloris.git')
+        -> 'cd slowloris' -> 'python3 slowloris.py YOURIP'
+
+    ------------------------------------------------------------------------------------------------------------------------------------
+    You have to set a protection against scans on your VM’s open ports.
+
+        Install nmap to scan ports ('sudo apt-get install nmap')
+        ('nc -z -v IPADDRESS [PORTS]' ('nc -z -v 10.13.200.17 2-65000') also scans ports)
+        
+        Install portsentry ('sudo apt-get install portsentry'). Change tcp/udp mode advanced
+        -> 'sudo nano /etc/default/portsentry' -> TCP_MODE="atcp" UDP_MODE="audp"
+        'sudo nano /etc/portsentry/portsentry.conf' ->
+        BLOCK_UDP="1"
+        BLOCK_TCP="1"
+        -> put # front of the only KILL_ROUTE that doesnt have it. And -> remove # from iptables support for Linux
+        Restart portsentry ('sudo service portsentry restart')
+
+    ------------------------------------------------------------------------------------------------------------------------------------
+    Stop the services you don’t need for this project.
+
+        'sudo systemctl list-unit-files --type=service --state enabled' shows services
+        -> 'sudo systemctl cat ***.service' shows more info about the service (sudo systemctl cat fail2ban.service)
+        'sudo systemctl disable ***.service' stops service
+        stop atleast console-setup and keyboard-setup
+
+    ------------------------------------------------------------------------------------------------------------------------------------
+    Create a script that updates all the sources of package, then your packages and which logs the whole in a file named 
+    /var/log/update_script.log. Create a scheduled task for this script once a week at 4AM and every time the machine reboots.
+        
+        'sudo touch /var/log/update_script.log' makes the .log file ->
+        'sudo chmod 777 /var/log/update_script.log'
+        Now we need to make the script -> 'sudo nano update.sh'
+        ->  #!/bin/bash
+            sudo apt-get update -y >> /var/log/update_script.log
+            sudo apt-get upgrade -y >> /var/log/update_script.log
+        -> 'sudo chmod 777 update.sh'
+        Now we need to run this script once every week and everytime the VM reboots ->
+        'sudo crontab -e' ->
+        @reboot sudo /home/reijjo/update.sh
+        0 4 * * 1 sudo /home/reijjo/update.sh
+        
+        -> 'sudo service cron restart'
+    
+    ------------------------------------------------------------------------------------------------------------------------------------
+    Make a script to monitor changes of the /etc/crontab file and sends an email to
+    root if it has been modified. Create a scheduled script task every day at midnight.
+
+        Install mailutils 'sudo apt-get install mailutils'
+        Copy crontab file 'sudo cp /etc/crontab /home/reijjo/crontab_copy'
+        Make a script to monitor if crontab file is changed -> 'sudo nano cron_monitor.sh'
+        ->  #!bin/bash
+            ORIGINAL="/etc/crontab"
+            COPY="/home/reijjo/crontab_copy"
+
+            if [ "$(cat $ORIGINAL)" != "$(cat $COPY)" ];
+            then
+            echo "SOS!!" | mail -s "crontab issues" root
+            fi;
+
+        Script to crontab to run every day at midnight -> 'sudo crontab -e'
+        ->  ...
+            0 0 * * * sudo /home/reijjo/cron_monitor.sh
+
+        'sudo service cron restart'
+
+    ------------------------------------------------------------------------------------------------------------------------------------
+
+-WEB PART
+
+    Install apache ('sudo apt-get install apache2')
+    Check that everything is ok (Syntax OK) ('sudo apache2ctl configtest')
+    Go to your IP with browser (http://10.13.200.17) (Apache 2 Debian Default page)
+    Check for openssl ('openssl version')
+    Enable mod.ssl for apache ('sudo a2enmod ssl') -> 'sudo systemctl restart apache2'
+    Make a cert and a key
+    ->  'sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout /etc/ssl/private/apache-selfsigned.key -out /etc/apache2/sites-available/10.13.200.17.conf'
+        req -x509   = X.509 cerficate signing request (CSR) managment
+        -nodes      = skip the option to secure certificate with passphrase
+        -days 365   = length of time certificate will be valid
+        -keyout     = where to place the private key we creating
+        -out        = where to place the cert we creating
+    
+    -> Most important to fill is COMMON NAME: 10.13.200.17 (your ip)
+    My cert is in   /etc/ssl/certs/apache-selfsigned.crt 
+    My key is in    /etc/ssl/private/apache-selfsigned.key
+
+    Make a minimal .conf file -> 'sudo nano /etc/apache2/sites-available/10.13.200.17.conf'
+    ->  <VirtualHost *:443>
+           ServerName 10.13.200.17
+           DocumentRoot /var/www/10.13.200.17
+
+           SSLEngine on
+           SSLCertificateFile /etc/ssl/certs/apache-selfsigned.crt
+           SSLCertificateKeyFile /etc/ssl/private/apache-selfsigned.key
+        </VirtualHost>
+
+    Create DocumentRoot ('sudo mkdir /var/www/10.13.200.17')
+    Create test .html file ('sudo nano /var/www/10.13.200.17/index.html')
+    this in the file -> <h1>testing</h1>
+
+    Enable new rules -> 'sudo a2ensite 10.13.200.17.conf' -> test that everything is ok
+    -> 'sudo apache2 configtest' -> 'sudo systemctl reload apache2.service'
+    Test your site. 'https://10.13.200.17' to your browser.
+    Redirect http to https. 'sudo nano /etc/apache2/sites-available/10.13.200.17.conf'
+    Add this to the file
+    ->   <VirtualHost *:80>
+        	ServerName 10.13.200.17
+        	Redirect / https://10.13.200.17
+        </VirtualHost>
+
+    'sudo apache2ctl configtest' -> 'sudo systemctl reload apache2.service'
+    Now try once more with your browser both 'http://10.13.200.17/' 'https://10.13.200.17/'
+
+    ------------------------------------------------------------------------------------------------------------------------------------
+
+-OK MAKE A WEBSITE
+    you can do it with VSCode and copypaste it to VM nano editor. (/var/www/10.13.200.17)
+
+
+
+
+
+
+
+    
+
+
+
+
+
